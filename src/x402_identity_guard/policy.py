@@ -3,6 +3,14 @@
 v1 is intentionally a fixed policy, not a config-driven rules engine —
 see README > Roadmap for why. If you need different thresholds or
 combination logic, fork resolve_trust(); it's short on purpose.
+
+Rules below are shaped around what's actually on-chain (no numeric
+identity/reputation score exists in TRC-8004 — reputation is raw
+Positive/Negative sentiment feedback, validation is a request/
+complete/reject workflow with no aggregate score). MIN_SENTIMENT_RATIO
+and MAX_NEGATIVE_REVIEWS are still our own guesses at reasonable
+values, same as the old numeric threshold was — not derived from any
+external spec. Revisit both once real agents have real feedback.
 """
 
 from __future__ import annotations
@@ -15,8 +23,9 @@ from .registry_client import AgentRecord, RegistryClient, RegistryError
 Status = Literal["ALLOW", "FLAG", "DENY"]
 
 # Reference-policy constants. Not yet configurable — see README > Roadmap.
-REPUTATION_THRESHOLD = 50.0
-REQUIRE_VALIDATION = True  # if False, "unvalidated" downgrades from FLAG to ALLOW
+MIN_SENTIMENT_RATIO = 0.70  # positive / (positive + negative)
+MAX_NEGATIVE_REVIEWS = 10   # absolute count, regardless of ratio
+REQUIRE_VALIDATION = True   # if False, "never validated" downgrades FLAG -> ALLOW
 
 
 @dataclass
@@ -31,16 +40,21 @@ def _decide(record: AgentRecord) -> Decision:
     if not record.has_identity:
         return Decision("DENY", "no_identity", record.agent_id, record)
 
-    if record.identity_revoked:
-        return Decision("DENY", "identity_revoked", record.agent_id, record)
-
-    if record.latest_validation_status == "rejected":
+    if record.validation_last_status == "rejected":
         return Decision("DENY", "failed_validation", record.agent_id, record)
 
-    if record.reputation_score is not None and record.reputation_score < REPUTATION_THRESHOLD:
-        return Decision("FLAG", "low_reputation", record.agent_id, record)
+    if record.reputation_negative > MAX_NEGATIVE_REVIEWS:
+        return Decision("DENY", "high_negative_volume", record.agent_id, record)
 
-    if record.latest_validation_status is None and REQUIRE_VALIDATION:
+    total_feedback = record.reputation_positive + record.reputation_negative
+    if total_feedback > 0:
+        ratio = record.reputation_positive / total_feedback
+        if ratio < MIN_SENTIMENT_RATIO:
+            return Decision("FLAG", "low_reputation", record.agent_id, record)
+    else:
+        return Decision("FLAG", "no_feedback_yet", record.agent_id, record)
+
+    if record.validation_last_status is None and REQUIRE_VALIDATION:
         return Decision("FLAG", "unvalidated", record.agent_id, record)
 
     return Decision("ALLOW", "ok", record.agent_id, record)

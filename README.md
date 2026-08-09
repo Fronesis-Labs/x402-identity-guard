@@ -24,6 +24,47 @@ ALLOW | FLAG | DENY
 Run identity-guard first to reject spam/revoked agents for free, then spend
 your DCL audit budget only on agents that pass.
 
+```mermaid
+flowchart TD
+    A[AI Agent] -->|x402 request| B[Your Server]
+    B --> C{x402-identity-guard}
+    C -->|lookup, cached| D[(TRC-8004 Registry)]
+    C -->|DENY| E[403, request rejected]
+    C -->|ALLOW / FLAG| F[DCL Trust Oracle]
+    F -->|audit passes| G[Action executes]
+```
+
+## Why this, and why now
+
+A July 2026 USENIX Security paper studying 15 major x402 facilitators found
+rule violations in all of them, and documented four concrete attack classes
+against x402 sellers — including a service-denial pattern where malicious
+agents can exhaust a seller's resources with no cost to the attacker.
+identity-guard addresses exactly that class of problem: reject agents with
+no verifiable TRC-8004 identity, a revoked identity, or a failed validation
+*before* they can spend your server's resources at all.
+
+### Landscape
+
+TRC-8004 / m2mregistry.io itself is early — the on-chain registries exist,
+but as of this writing they ship raw primitives (Identity, Validation,
+Reputation), not an interpreted "is this agent trustworthy" answer. Adjacent
+TRON projects solve different problems:
+
+- **Payment facilitators** (e.g. MERX) move stablecoins for x402 requests —
+  they settle payment, they don't evaluate who's making the request.
+- **Agent messaging / social apps** built on TRC-8004 are consumer-facing
+  (B2C), not a server-side defense layer.
+- **Wallet/identity infra providers** help an agent mint its TRC-8004
+  passport in the first place — they don't help *sellers* decide whether to
+  trust an incoming passport.
+
+identity-guard is a reference interpretation layer sitting between those:
+it reads what TRC-8004 already publishes and gives x402 servers a decision
+they can act on. As of this writing we're not aware of another project
+doing that specific job on TRON — if that's changed, open an issue and
+we'll update this section.
+
 ## Status
 
 Early. TRC-8004 / m2mregistry.io itself is early (mainnet + Shasta testnet,
@@ -66,27 +107,52 @@ See `examples/dcl_integration_example.py` for wiring this in front of
 
 ## Policy
 
-v1's reference policy (`src/x402_identity_guard/policy.py`), in order:
+TRC-8004 doesn't expose a numeric identity/reputation score — Identity is
+NFT ownership, Reputation is raw Positive/Negative/Neutral sentiment
+feedback, and Validation is a request → complete/reject workflow with no
+aggregate on-chain score. v1's reference policy (`src/x402_identity_guard/policy.py`)
+turns those primitives into a decision, in order:
 
-1. No registered Identity on TRC-8004 → **DENY** (`no_identity`)
+1. No resolvable owner (or owner is TRON's zero/burn address) → **DENY** (`no_identity`)
 2. Latest Validation request has status `rejected` → **DENY** (`failed_validation`)
-3. Reputation score below `REPUTATION_THRESHOLD` (default 50) → **FLAG** (`low_reputation`)
-4. No Validation on record at all → **FLAG** (`unvalidated`)
-5. Otherwise → **ALLOW**
+3. More than `MAX_NEGATIVE_REVIEWS` negative feedback entries (default 10), regardless of ratio → **DENY** (`high_negative_volume`)
+4. Positive/(Positive+Negative) ratio below `MIN_SENTIMENT_RATIO` (default 0.70) → **FLAG** (`low_reputation`)
+5. No feedback on record at all yet → **FLAG** (`no_feedback_yet`)
+6. Never validated → **FLAG** (`unvalidated`)
+7. Otherwise → **ALLOW**
 
-These are constants at the top of `policy.py`, not a config file, by design —
-see Roadmap. If your risk model differs, fork the function; it's ~30 lines.
+These thresholds are constants at the top of `policy.py`, not a config file,
+by design — see Roadmap. They're our own reasonable-looking defaults, not
+derived from any TRC-8004 spec — revisit once real agents have real
+feedback history. If your risk model differs, fork the function; it's
+short on purpose.
+
+### Reading the registry
+
+`registry_client.py` reads through two tiers, matching m2mregistry.io's own
+documented architecture: the indexed `RegistryAPI` (fast) first, falling
+back to the on-chain `AgentRegistry` (trustless, slower) only when the fast
+path returns nothing — so a just-registered agent that hasn't hit the
+indexer yet isn't mistaken for a nonexistent one. The exact JSON shape of
+`get_reputation()` / `get_validation_stats()` isn't fully documented
+upstream, so the normalizer functions there accept either a dict or a raw
+list and are marked for adjustment once tested against a real registered
+agent.
 
 ## Roadmap
 
 - v1 (this repo): fixed reference policy, Python only, TTL-cached registry reads
 - v1.x: pluggable policy (swap `resolve_trust` for your own callable)
-- Later, if there's real integrator demand: configurable thresholds
-  (AND/OR/weighted signals), Node.js port
+- Later, if there's real integrator demand: configurable/weighted thresholds
+  (YAML config, AND/OR/weighted signal combination), Node.js port and npm
+  package
 
-We're deliberately not building a rules-engine config format until someone
-outside Fronesis Labs asks for one — guessing at requirements before any
-integrator feedback isn't a good use of a 5-day sprint.
+We're deliberately not building a rules-engine config format or a second
+language port until someone outside Fronesis Labs actually asks for one.
+Both are real, buildable features — we're just not guessing at their exact
+shape (weights? which fields required? what config format?) before any
+integrator has used v1 and told us what they need. If you want either of
+these now, open an issue describing your use case.
 
 ## Development
 
