@@ -4,7 +4,12 @@ from starlette.routing import Route
 from starlette.testclient import TestClient
 
 from x402_identity_guard.middleware import IdentityGuardMiddleware
-from x402_identity_guard.registry_client import AgentRecord
+from x402_identity_guard.registry_client import (
+    AgentClassification,
+    AgentIdentity,
+    AgentRecord,
+    TrustSignals,
+)
 
 
 class _StubClient:
@@ -30,22 +35,31 @@ def _make_app(record: AgentRecord, block_on_flag: bool = False):
     return app
 
 
-def _record(**overrides):
-    base = dict(
-        agent_id="agent_test",
+def _record(classification=AgentClassification.VERIFIED, **signal_overrides):
+    identity = AgentIdentity(
+        agent_id="1:36",
         exists=True,
-        active=True,
-        verified=True,
-        feedback_positive=9,
-        feedback_neutral=0,
-        feedback_negative=1,
-        total_feedback=10,
-        total_validations=1,
-        validations_completed=1,
-        validations_rejected=0,
+        owner="TDkW667J6RWm5eCwokE4jgTJ6JV2PfYBEz",
+        wallet="TDkW667J6RWm5eCwokE4jgTJ6JV2PfYBEz",
+        token_uri="https://example.com/agent/36.json",
+        metadata_wallet="TDkW667J6RWm5eCwokE4jgTJ6JV2PfYBEz",
+        is_consistent=True,
+        active_self_reported=True,
+        registration_file_reachable=True,
     )
-    base.update(overrides)
-    return AgentRecord(**base)
+    signals_base = dict(
+        reputation_count=5,
+        reputation_average_value=90.0,
+        clients=(),
+        validation_count=1,
+        validation_summary=(1, 1),
+    )
+    signals_base.update(signal_overrides)
+    return AgentRecord(
+        identity=identity,
+        trust_signals=TrustSignals(**signals_base),
+        classification=classification,
+    )
 
 
 def test_no_agent_header_passes_through():
@@ -58,29 +72,34 @@ def test_no_agent_header_passes_through():
 def test_allowed_agent_reaches_route():
     app = _make_app(_record())
     client = TestClient(app)
-    resp = client.get("/", headers={"X-Agent-Id": "agent_test"})
+    resp = client.get("/", headers={"X-Agent-Id": "1:36"})
     assert resp.status_code == 200
     assert resp.json() == {"ok": True}
 
 
 def test_denied_agent_gets_403():
-    app = _make_app(_record(exists=False))
+    app = _make_app(_record(classification=AgentClassification.NOT_FOUND))
     client = TestClient(app)
-    resp = client.get("/", headers={"X-Agent-Id": "agent_test"})
+    resp = client.get("/", headers={"X-Agent-Id": "1:36"})
     assert resp.status_code == 403
-    assert resp.json()["reason"] == "no_identity"
 
 
 def test_flagged_agent_passes_by_default():
-    app = _make_app(_record(feedback_positive=2, feedback_negative=8, total_feedback=10), block_on_flag=False)
+    app = _make_app(
+        _record(classification=AgentClassification.KNOWN_BUT_UNTRUSTED, reputation_count=0, reputation_average_value=None),
+        block_on_flag=False,
+    )
     client = TestClient(app)
-    resp = client.get("/", headers={"X-Agent-Id": "agent_test"})
+    resp = client.get("/", headers={"X-Agent-Id": "1:36"})
     assert resp.status_code == 200
 
 
 def test_flagged_agent_blocked_when_configured():
-    app = _make_app(_record(feedback_positive=2, feedback_negative=8, total_feedback=10), block_on_flag=True)
+    app = _make_app(
+        _record(classification=AgentClassification.KNOWN_BUT_UNTRUSTED, reputation_count=0, reputation_average_value=None),
+        block_on_flag=True,
+    )
     client = TestClient(app)
-    resp = client.get("/", headers={"X-Agent-Id": "agent_test"})
+    resp = client.get("/", headers={"X-Agent-Id": "1:36"})
     assert resp.status_code == 423
-    assert resp.json()["reason"] == "low_reputation"
+    assert resp.json()["reason"] == "known_but_untrusted"

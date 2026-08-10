@@ -6,8 +6,10 @@ readme = "README.md"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.10"
 dependencies = [
-    "trc8004-m2m",
     "starlette",
+    "tronpy",
+    # bankofai.sdk_8004 is not on PyPI — install separately:
+    # pip install "git+https://github.com/BofAI/8004-sdk.git#subdirectory=python"
 ]
 
 [project.optional-dependencies]

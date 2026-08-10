@@ -1,76 +1,124 @@
 import pytest
 
 from x402_identity_guard.policy import _decide
-from x402_identity_guard.registry_client import AgentRecord
+from x402_identity_guard.registry_client import (
+    AgentClassification,
+    AgentIdentity,
+    AgentRecord,
+    TrustSignals,
+)
 
 
-def _record(**overrides):
+def _identity(**overrides):
     base = dict(
-        agent_id="agent_test",
+        agent_id="1:36",
         exists=True,
-        active=True,
-        verified=True,
-        feedback_positive=9,
-        feedback_neutral=0,
-        feedback_negative=1,
-        total_feedback=10,
-        total_validations=1,
-        validations_completed=1,
-        validations_rejected=0,
+        owner="TDkW667J6RWm5eCwokE4jgTJ6JV2PfYBEz",
+        wallet="TDkW667J6RWm5eCwokE4jgTJ6JV2PfYBEz",
+        token_uri="https://example.com/agent/36.json",
+        metadata_wallet="TDkW667J6RWm5eCwokE4jgTJ6JV2PfYBEz",
+        is_consistent=True,
+        active_self_reported=True,
+        registration_file_reachable=True,
     )
     base.update(overrides)
-    return AgentRecord(**base)
+    return AgentIdentity(**base)
 
 
-def test_no_identity_denies():
-    decision = _decide(_record(exists=False))
+def _signals(**overrides):
+    base = dict(
+        reputation_count=0,
+        reputation_average_value=None,
+        clients=(),
+        validation_count=0,
+        validation_summary=(0, 0),
+    )
+    base.update(overrides)
+    return TrustSignals(**base)
+
+
+def _record(identity=None, signals=None, classification=AgentClassification.KNOWN_BUT_UNTRUSTED):
+    return AgentRecord(
+        identity=identity or _identity(),
+        trust_signals=signals or _signals(),
+        classification=classification,
+    )
+
+
+def test_nonexistent_identity_denies():
+    record = _record(
+        identity=_identity(exists=False, owner=None, wallet=None, is_consistent=False),
+        classification=AgentClassification.NOT_FOUND,
+    )
+    decision = _decide(record)
     assert decision.status == "DENY"
     assert decision.reason == "no_identity"
 
 
-def test_deactivated_agent_denies():
-    decision = _decide(_record(active=False))
+def test_inconsistent_identity_denies():
+    record = _record(
+        identity=_identity(is_consistent=False),
+        classification=AgentClassification.INCONSISTENT_IDENTITY,
+    )
+    decision = _decide(record)
     assert decision.status == "DENY"
-    assert decision.reason == "deactivated"
+    assert decision.reason == "inconsistent_identity"
 
 
-def test_rejected_validation_denies():
-    decision = _decide(_record(validations_rejected=1))
+def test_failed_validation_denies():
+    record = _record(
+        signals=_signals(validation_count=1, validation_summary=(0, 1)),
+        classification=AgentClassification.VERIFIED,
+    )
+    decision = _decide(record)
     assert decision.status == "DENY"
     assert decision.reason == "failed_validation"
 
 
-def test_high_negative_volume_denies_even_with_good_ratio():
-    decision = _decide(_record(feedback_positive=900, feedback_negative=100, total_feedback=1000))
+def test_low_reputation_score_denies():
+    record = _record(
+        signals=_signals(reputation_count=5, reputation_average_value=30.0),
+        classification=AgentClassification.VERIFIED,
+    )
+    decision = _decide(record)
     assert decision.status == "DENY"
-    assert decision.reason == "high_negative_volume"
+    assert decision.reason == "low_reputation_score"
 
 
-def test_no_feedback_yet_flags():
-    decision = _decide(_record(feedback_positive=0, feedback_negative=0, total_feedback=0))
+def test_known_but_untrusted_flags():
+    record = _record(classification=AgentClassification.KNOWN_BUT_UNTRUSTED)
+    decision = _decide(record)
     assert decision.status == "FLAG"
-    assert decision.reason == "no_feedback_yet"
+    assert decision.reason == "known_but_untrusted"
 
 
-def test_low_positive_ratio_flags():
-    decision = _decide(_record(feedback_positive=2, feedback_negative=8, total_feedback=10))
+def test_unreachable_registration_file_flags():
+    record = _record(
+        identity=_identity(registration_file_reachable=False),
+        signals=_signals(reputation_count=5, reputation_average_value=90.0, validation_summary=(1, 1)),
+        classification=AgentClassification.VERIFIED,
+    )
+    decision = _decide(record)
     assert decision.status == "FLAG"
-    assert decision.reason == "low_reputation"
+    assert decision.reason == "unreachable_registration_file"
 
 
-def test_never_validated_flags():
-    decision = _decide(_record(total_validations=0, validations_completed=0))
-    assert decision.status == "FLAG"
-    assert decision.reason == "unvalidated"
-
-
-def test_clean_agent_allows():
-    decision = _decide(_record())
+def test_clean_verified_agent_allows():
+    record = _record(
+        signals=_signals(reputation_count=5, reputation_average_value=90.0, validation_summary=(1, 1)),
+        classification=AgentClassification.VERIFIED,
+    )
+    decision = _decide(record)
     assert decision.status == "ALLOW"
     assert decision.reason == "ok"
 
 
 def test_no_identity_takes_priority_over_everything():
-    decision = _decide(_record(exists=False, feedback_positive=1000, feedback_negative=0, total_feedback=1000))
+    record = _record(
+        identity=_identity(exists=False, owner=None, wallet=None, is_consistent=False),
+        signals=_signals(reputation_count=100, reputation_average_value=100.0),
+        classification=AgentClassification.NOT_FOUND,
+    )
+    decision = _decide(record)
     assert decision.status == "DENY"
     assert decision.reason == "no_identity"
