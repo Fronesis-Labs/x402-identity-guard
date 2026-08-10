@@ -1,5 +1,5 @@
 """Run this against your real registered agent_id on Shasta and paste the
-output back — this settles the AgentRecord shape from fact, not guesses.
+output back — confirms the Agent record's real values in production use.
 
 Usage:
     python inspect_agent.py <agent_id>
@@ -8,41 +8,31 @@ Usage:
 import asyncio
 import sys
 
-from trc8004_m2m import AgentRegistry, RegistryAPI
+from trc8004_m2m import AgentRegistry
 
 
 async def main(agent_id: str):
     print(f"=== Inspecting agent_id={agent_id} on Shasta ===\n")
 
-    # --- On-chain, read-only (no private_key needed) ---
-    chain = AgentRegistry(network="shasta")
-    print("--- AgentRegistry (on-chain) ---")
+    registry = AgentRegistry(network="shasta", api_url="https://m2mregistry.io/api")
+
     try:
-        agent = await chain.get_agent(agent_id=agent_id)
-        print("get_agent():", repr(agent))
+        exists = await registry.verify_agent_exists(agent_id=agent_id)
+        print("verify_agent_exists():", exists)
+    except Exception as exc:
+        print("verify_agent_exists() raised:", repr(exc))
+        return
+
+    if not exists:
+        print("Agent does not exist — nothing further to inspect.")
+        return
+
+    try:
+        agent = await registry.get_agent(agent_id=agent_id)
+        print("\nget_agent():")
+        print(agent.model_dump_json(indent=2))
     except Exception as exc:
         print("get_agent() raised:", repr(exc))
-
-    # --- Indexed API (fast path) ---
-    api = RegistryAPI(base_url="https://m2mregistry.io/api")
-    print("\n--- RegistryAPI (indexed) ---")
-    try:
-        agent = await api.get_agent(agent_id=agent_id)
-        print("get_agent():", repr(agent))
-    except Exception as exc:
-        print("get_agent() raised:", repr(exc))
-
-    try:
-        reputation = await api.get_reputation(agent_id=agent_id)
-        print("get_reputation():", repr(reputation))
-    except Exception as exc:
-        print("get_reputation() raised:", repr(exc))
-
-    try:
-        validation = await api.get_validation_stats(agent_id=agent_id)
-        print("get_validation_stats():", repr(validation))
-    except Exception as exc:
-        print("get_validation_stats() raised:", repr(exc))
 
     print("\n=== Done — paste this whole output back ===")
 

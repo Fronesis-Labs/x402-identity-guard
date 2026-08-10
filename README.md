@@ -72,6 +72,19 @@ registry currently near-empty). This ships a **fixed reference policy** for
 v1 — not a configurable rules engine yet. See [Policy](#policy) below for
 exactly what it checks, and [Roadmap](#roadmap) for what's next.
 
+### Known limitation: registry API availability
+
+As of 2026-08-09, m2mregistry.io's indexed API (`/api/*`) was unreachable
+for us — TLS connects fine, but requests hang until timeout with zero
+bytes back, while the main site itself responds normally. This looks
+like an infrastructure issue on their end, not a bug in this repo; we've
+reported it. `resolve_trust()` already fails to `FLAG` rather than `ALLOW`
+or `DENY` when the registry can't be reached (tested in
+`test_registry_error_handling.py`), so a registry outage degrades to "let
+your server's own judgment decide" rather than either open-door or
+hard-lockout. We haven't added retry/backoff on top of the SDK's own
+internal retries — see the code comments in `registry_client.py` for why.
+
 ## Install
 
 ```bash
@@ -107,19 +120,19 @@ See `examples/dcl_integration_example.py` for wiring this in front of
 
 ## Policy
 
-TRC-8004 doesn't expose a numeric identity/reputation score — Identity is
-NFT ownership, Reputation is raw Positive/Negative/Neutral sentiment
-feedback, and Validation is a request → complete/reject workflow with no
-aggregate on-chain score. v1's reference policy (`src/x402_identity_guard/policy.py`)
-turns those primitives into a decision, in order:
+TRC-8004's `Agent` record already carries aggregated counters — no
+separate reputation/validation lookup needed, one `get_agent()` call
+returns everything. v1's reference policy (`src/x402_identity_guard/policy.py`)
+turns that into a decision, in order:
 
-1. No resolvable owner (or owner is TRON's zero/burn address) → **DENY** (`no_identity`)
-2. Latest Validation request has status `rejected` → **DENY** (`failed_validation`)
-3. More than `MAX_NEGATIVE_REVIEWS` negative feedback entries (default 10), regardless of ratio → **DENY** (`high_negative_volume`)
-4. Positive/(Positive+Negative) ratio below `MIN_SENTIMENT_RATIO` (default 0.70) → **FLAG** (`low_reputation`)
+1. Agent doesn't exist on TRC-8004 → **DENY** (`no_identity`)
+2. Agent exists but is deactivated (`active=False`) → **DENY** (`deactivated`)
+3. Any rejected validation on record → **DENY** (`failed_validation`)
+4. More than `MAX_NEGATIVE_FEEDBACK` negative feedback entries (default 10), regardless of ratio → **DENY** (`high_negative_volume`)
 5. No feedback on record at all yet → **FLAG** (`no_feedback_yet`)
-6. Never validated → **FLAG** (`unvalidated`)
-7. Otherwise → **ALLOW**
+6. `feedback_positive / total_feedback` below `MIN_POSITIVE_RATIO` (default 0.70) → **FLAG** (`low_reputation`)
+7. Never validated (`total_validations == 0`) → **FLAG** (`unvalidated`)
+8. Otherwise → **ALLOW**
 
 These thresholds are constants at the top of `policy.py`, not a config file,
 by design — see Roadmap. They're our own reasonable-looking defaults, not
@@ -129,15 +142,12 @@ short on purpose.
 
 ### Reading the registry
 
-`registry_client.py` reads through two tiers, matching m2mregistry.io's own
-documented architecture: the indexed `RegistryAPI` (fast) first, falling
-back to the on-chain `AgentRegistry` (trustless, slower) only when the fast
-path returns nothing — so a just-registered agent that hasn't hit the
-indexer yet isn't mistaken for a nonexistent one. The exact JSON shape of
-`get_reputation()` / `get_validation_stats()` isn't fully documented
-upstream, so the normalizer functions there accept either a dict or a raw
-list and are marked for adjustment once tested against a real registered
-agent.
+`registry_client.py` wraps `trc8004_m2m.AgentRegistry` directly — confirmed
+against a live install's real exports and `Agent.model_fields`, not
+documentation (the docs site itself was inconsistent across pages about
+the client's name and shape). `verify_agent_exists()` gates a cheap
+existence check before the fuller `get_agent()` call. Results are
+TTL-cached (`cache.py`) to avoid a registry round-trip on every request.
 
 ## Roadmap
 

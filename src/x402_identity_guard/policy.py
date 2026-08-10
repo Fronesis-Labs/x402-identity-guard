@@ -1,16 +1,15 @@
-"""Reference policy: turns TRC-8004's three raw primitives into one decision.
+"""Reference policy: turns a real TRC-8004 Agent record into one decision.
 
 v1 is intentionally a fixed policy, not a config-driven rules engine —
 see README > Roadmap for why. If you need different thresholds or
 combination logic, fork resolve_trust(); it's short on purpose.
 
-Rules below are shaped around what's actually on-chain (no numeric
-identity/reputation score exists in TRC-8004 — reputation is raw
-Positive/Negative sentiment feedback, validation is a request/
-complete/reject workflow with no aggregate score). MIN_SENTIMENT_RATIO
-and MAX_NEGATIVE_REVIEWS are still our own guesses at reasonable
-values, same as the old numeric threshold was — not derived from any
-external spec. Revisit both once real agents have real feedback.
+Field names below are confirmed directly from a live trc8004-m2m
+install's Agent.model_fields (2026-08-09), not documentation guesses:
+exists/active/verified are booleans, feedback_positive/neutral/negative
+and total_feedback are counts, total_validations/validations_completed/
+validations_rejected are counts. No 0-100 score of any kind exists on
+either primitive.
 """
 
 from __future__ import annotations
@@ -23,8 +22,9 @@ from .registry_client import AgentRecord, RegistryClient, RegistryError
 Status = Literal["ALLOW", "FLAG", "DENY"]
 
 # Reference-policy constants. Not yet configurable — see README > Roadmap.
-MIN_SENTIMENT_RATIO = 0.70  # positive / (positive + negative)
-MAX_NEGATIVE_REVIEWS = 10   # absolute count, regardless of ratio
+# Our own reasonable-looking defaults, not derived from any TRC-8004 spec.
+MIN_POSITIVE_RATIO = 0.70   # feedback_positive / total_feedback
+MAX_NEGATIVE_FEEDBACK = 10  # absolute count, regardless of ratio
 REQUIRE_VALIDATION = True   # if False, "never validated" downgrades FLAG -> ALLOW
 
 
@@ -37,24 +37,26 @@ class Decision:
 
 
 def _decide(record: AgentRecord) -> Decision:
-    if not record.has_identity:
+    if not record.exists:
         return Decision("DENY", "no_identity", record.agent_id, record)
 
-    if record.validation_last_status == "rejected":
+    if not record.active:
+        return Decision("DENY", "deactivated", record.agent_id, record)
+
+    if record.validations_rejected > 0:
         return Decision("DENY", "failed_validation", record.agent_id, record)
 
-    if record.reputation_negative > MAX_NEGATIVE_REVIEWS:
+    if record.feedback_negative > MAX_NEGATIVE_FEEDBACK:
         return Decision("DENY", "high_negative_volume", record.agent_id, record)
 
-    total_feedback = record.reputation_positive + record.reputation_negative
-    if total_feedback > 0:
-        ratio = record.reputation_positive / total_feedback
-        if ratio < MIN_SENTIMENT_RATIO:
-            return Decision("FLAG", "low_reputation", record.agent_id, record)
-    else:
+    if record.total_feedback == 0:
         return Decision("FLAG", "no_feedback_yet", record.agent_id, record)
 
-    if record.validation_last_status is None and REQUIRE_VALIDATION:
+    ratio = record.feedback_positive / record.total_feedback
+    if ratio < MIN_POSITIVE_RATIO:
+        return Decision("FLAG", "low_reputation", record.agent_id, record)
+
+    if record.total_validations == 0 and REQUIRE_VALIDATION:
         return Decision("FLAG", "unvalidated", record.agent_id, record)
 
     return Decision("ALLOW", "ok", record.agent_id, record)

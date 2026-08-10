@@ -33,11 +33,16 @@ def _make_app(record: AgentRecord, block_on_flag: bool = False):
 def _record(**overrides):
     base = dict(
         agent_id="agent_test",
-        has_identity=True,
-        owner_address="TSomeRealOwnerAddress111111111111",
-        reputation_positive=9,
-        reputation_negative=1,
-        validation_last_status="completed",
+        exists=True,
+        active=True,
+        verified=True,
+        feedback_positive=9,
+        feedback_neutral=0,
+        feedback_negative=1,
+        total_feedback=10,
+        total_validations=1,
+        validations_completed=1,
+        validations_rejected=0,
     )
     base.update(overrides)
     return AgentRecord(**base)
@@ -59,7 +64,7 @@ def test_allowed_agent_reaches_route():
 
 
 def test_denied_agent_gets_403():
-    app = _make_app(_record(has_identity=False, owner_address=None))
+    app = _make_app(_record(exists=False))
     client = TestClient(app)
     resp = client.get("/", headers={"X-Agent-Id": "agent_test"})
     assert resp.status_code == 403
@@ -67,14 +72,14 @@ def test_denied_agent_gets_403():
 
 
 def test_flagged_agent_passes_by_default():
-    app = _make_app(_record(reputation_positive=2, reputation_negative=8), block_on_flag=False)
+    app = _make_app(_record(feedback_positive=2, feedback_negative=8, total_feedback=10), block_on_flag=False)
     client = TestClient(app)
     resp = client.get("/", headers={"X-Agent-Id": "agent_test"})
     assert resp.status_code == 200
 
 
 def test_flagged_agent_blocked_when_configured():
-    app = _make_app(_record(reputation_positive=2, reputation_negative=8), block_on_flag=True)
+    app = _make_app(_record(feedback_positive=2, feedback_negative=8, total_feedback=10), block_on_flag=True)
     client = TestClient(app)
     resp = client.get("/", headers={"X-Agent-Id": "agent_test"})
     assert resp.status_code == 423

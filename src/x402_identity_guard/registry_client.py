@@ -1,18 +1,33 @@
 """Reads agent state from TRC-8004 via the trc8004-m2m SDK.
 
-Confirmed against the real SDK docs (m2mregistry.io/docs/sdk), not
-guessed — but the exact JSON/attribute shape RegistryAPI.get_agent(),
-get_reputation(), and get_validation_stats() return is still not
-fully documented, so _normalize_* below stays defensive (getattr/dict
-fallbacks) until we've seen a real response for a registered agent.
+Confirmed directly against a live install (trc8004-m2m real package
+introspection: dir(trc8004_m2m), AgentRegistry method list, and
+Agent/Feedback/Validation.model_fields), not docs guesses — the
+docs site (m2mregistry.io) turned out to be internally inconsistent
+across pages (different pages named the client TronClient vs
+AgentRegistry vs implied a separate RegistryAPI class); none of
+those matched the real top-level export. AgentRegistry is the real
+class, confirmed 2026-08-09 against a live Shasta install.
 
-Two-tier read, per the registry's own documented architecture:
-  1. RegistryAPI (indexed Postgres) — fast path, used by default.
-  2. AgentRegistry (on-chain, trustless) — fallback, only hit when the
-     fast path returns nothing for an agent_id. This guards against
-     indexer lag: a just-registered agent existing on-chain but not
-     yet in the index should not be treated the same as "never
-     registered".
+One thing not yet confirmed: whether verify_agent_exists()/get_agent()
+take agent_id as a keyword arg exactly like this. Every other
+documented call across m2mregistry.io consistently used agent_id=,
+so this follows that pattern, but hasn't been exercised against a
+real registered agent yet.
+
+api_url defaults to the real base URL confirmed at
+m2mregistry.io/docs/api ("Base URL: https://m2mregistry.io/api") —
+AgentRegistry's own default (http://localhost:8000) is wrong for any
+real use and will fail every API-backed call (get_agent,
+verify_agent_exists, search_agents) with a connection error.
+
+On registry API outages: the SDK itself already retries internally
+(observed "Retry exhausted for api_search_agents after 3 attempts" in
+testing) before raising. We deliberately don't add a second retry
+layer on top — stacking our own backoff on an already-retried call
+would multiply wait time for no real benefit. RegistryError propagates
+up to policy.py's resolve_trust(), which fails to FLAG rather than
+ALLOW or DENY — see that module's docstring.
 """
 
 from __future__ import annotations
@@ -22,27 +37,24 @@ from dataclasses import dataclass
 from .cache import TTLCache
 
 try:
-    from trc8004_m2m import AgentRegistry, RegistryAPI  # type: ignore
+    from trc8004_m2m import AgentRegistry  # type: ignore
 except ImportError:  # pragma: no cover - SDK optional at dev time
     AgentRegistry = None  # type: ignore
-    RegistryAPI = None  # type: ignore
-
-# TRON's zero/burn address (base58check of all-zero bytes). An agent
-# NFT owned by this address, or a get_agent() call that can't resolve
-# an owner at all, is treated as "no identity".
-TRON_ZERO_ADDRESS = "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb"
 
 
 @dataclass
 class AgentRecord:
     agent_id: str
-    has_identity: bool
-    owner_address: str | None
-    reputation_positive: int
-    reputation_negative: int
-    # Last terminal validation event for this agent, if any:
-    # "completed" | "rejected" | None (no validation on record yet)
-    validation_last_status: str | None
+    exists: bool
+    active: bool
+    verified: bool
+    feedback_positive: int
+    feedback_neutral: int
+    feedback_negative: int
+    total_feedback: int
+    total_validations: int
+    validations_completed: int
+    validations_rejected: int
 
 
 class RegistryError(RuntimeError):
@@ -53,15 +65,14 @@ class RegistryClient:
     def __init__(
         self,
         network: str = "shasta",
-        api_base_url: str = "https://m2mregistry.io/api",
+        api_url: str = "https://m2mregistry.io/api",
         cache_ttl_seconds: float = 120.0,
     ):
-        if AgentRegistry is None or RegistryAPI is None:
+        if AgentRegistry is None:
             raise ImportError(
                 "trc8004-m2m is not installed. Run: pip install trc8004-m2m"
             )
-        self._api = RegistryAPI(base_url=api_base_url)
-        self._chain = AgentRegistry(network=network)  # read-only, no private_key
+        self._registry = AgentRegistry(network=network, api_url=api_url)
         self._cache: TTLCache[AgentRecord] = TTLCache(ttl_seconds=cache_ttl_seconds)
 
     async def get_agent_record(self, agent_id: str) -> AgentRecord:
@@ -75,96 +86,40 @@ class RegistryClient:
 
     async def _fetch(self, agent_id: str) -> AgentRecord:
         try:
-            raw_agent = await self._api.get_agent(agent_id=agent_id)
-        except Exception as exc:  # noqa: BLE001 - SDK exception types unconfirmed
-            raise RegistryError(f"registry API lookup failed for {agent_id}: {exc}") from exc
+            exists = await self._registry.verify_agent_exists(agent_id=agent_id)
+        except Exception as exc:  # noqa: BLE001 - SDK exception types not yet exercised live
+            raise RegistryError(f"existence check failed for {agent_id}: {exc}") from exc
 
-        # Fast-path miss (indexer lag, or agent genuinely doesn't exist) —
-        # fall back to the on-chain read before deciding "no identity".
-        if raw_agent is None:
-            try:
-                raw_agent = await self._chain.get_agent(agent_id=agent_id)
-            except Exception as exc:  # noqa: BLE001
-                raise RegistryError(
-                    f"on-chain fallback failed for {agent_id}: {exc}"
-                ) from exc
-
-        owner_address = self._extract_owner(raw_agent)
-        has_identity = raw_agent is not None and owner_address not in (None, TRON_ZERO_ADDRESS)
-
-        try:
-            raw_reputation = await self._api.get_reputation(agent_id=agent_id)
-        except Exception as exc:  # noqa: BLE001
-            raise RegistryError(f"reputation lookup failed for {agent_id}: {exc}") from exc
+        if not exists:
+            return AgentRecord(
+                agent_id=agent_id,
+                exists=False,
+                active=False,
+                verified=False,
+                feedback_positive=0,
+                feedback_neutral=0,
+                feedback_negative=0,
+                total_feedback=0,
+                total_validations=0,
+                validations_completed=0,
+                validations_rejected=0,
+            )
 
         try:
-            raw_validation = await self._api.get_validation_stats(agent_id=agent_id)
+            agent = await self._registry.get_agent(agent_id=agent_id)
         except Exception as exc:  # noqa: BLE001
-            raise RegistryError(f"validation stats lookup failed for {agent_id}: {exc}") from exc
-
-        pos, neg = self._normalize_reputation(raw_reputation)
-        last_status = self._normalize_validation(raw_validation)
+            raise RegistryError(f"get_agent failed for {agent_id}: {exc}") from exc
 
         return AgentRecord(
             agent_id=agent_id,
-            has_identity=has_identity,
-            owner_address=owner_address,
-            reputation_positive=pos,
-            reputation_negative=neg,
-            validation_last_status=last_status,
+            exists=True,
+            active=agent.active,
+            verified=agent.verified,
+            feedback_positive=agent.feedback_positive,
+            feedback_neutral=agent.feedback_neutral,
+            feedback_negative=agent.feedback_negative,
+            total_feedback=agent.total_feedback,
+            total_validations=agent.total_validations,
+            validations_completed=agent.validations_completed,
+            validations_rejected=agent.validations_rejected,
         )
-
-    @staticmethod
-    def _extract_owner(raw_agent) -> str | None:
-        if raw_agent is None:
-            return None
-        if isinstance(raw_agent, dict):
-            return raw_agent.get("owner_address") or raw_agent.get("owner")
-        return getattr(raw_agent, "owner_address", None)
-
-    @staticmethod
-    def _normalize_reputation(raw_reputation) -> tuple[int, int]:
-        """Handle either an aggregate dict {'positive': n, 'negative': n}
-        or a raw list of per-feedback entries [{'sentiment': 'Positive'|'Negative'|'Neutral'}, ...].
-        Shape not confirmed against a live response yet — this covers both
-        documented possibilities; adjust once we've seen the real payload.
-        """
-        if raw_reputation is None:
-            return 0, 0
-
-        if isinstance(raw_reputation, dict) and ("positive" in raw_reputation or "negative" in raw_reputation):
-            return int(raw_reputation.get("positive", 0)), int(raw_reputation.get("negative", 0))
-
-        if isinstance(raw_reputation, (list, tuple)):
-            pos = sum(1 for entry in raw_reputation if RegistryClient._entry_sentiment(entry) == "positive")
-            neg = sum(1 for entry in raw_reputation if RegistryClient._entry_sentiment(entry) == "negative")
-            return pos, neg
-
-        return 0, 0
-
-    @staticmethod
-    def _entry_sentiment(entry) -> str | None:
-        raw = entry.get("sentiment") if isinstance(entry, dict) else getattr(entry, "sentiment", None)
-        if raw is None:
-            return None
-        return str(raw).lower()
-
-    @staticmethod
-    def _normalize_validation(raw_validation) -> str | None:
-        """Extract the most recent terminal status (completed/rejected) from
-        whatever get_validation_stats() returns. Shape not confirmed yet —
-        handles a 'last_action'-style dict and a raw history list.
-        """
-        if raw_validation is None:
-            return None
-
-        if isinstance(raw_validation, dict):
-            last = raw_validation.get("last_action") or raw_validation.get("status")
-            return str(last).lower() if last else None
-
-        if isinstance(raw_validation, (list, tuple)) and raw_validation:
-            last_entry = raw_validation[-1]
-            status = last_entry.get("status") if isinstance(last_entry, dict) else getattr(last_entry, "status", None)
-            return str(status).lower() if status else None
-
-        return None
