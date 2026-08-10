@@ -116,15 +116,46 @@ Reference policy (`src/x402_identity_guard/policy.py`), evaluated in order:
 7. Otherwise → **ALLOW**
 
 `MIN_REPUTATION_SCORE` is a constant at the top of `policy.py`, not a
-config file, by design — see Roadmap. It's our own reasonable-looking
-default, not derived from any TRC-8004 spec — revisit once real agents
-have real feedback history. If your risk model differs, fork
-`_decide()`; it's short on purpose.
+config file, by design. It's our own reasonable-looking default, not
+derived from any TRC-8004 spec — revisit once real agents have real
+feedback history.
+
+### Swapping in your own policy
+
+`resolve_trust` and `IdentityGuardMiddleware` both accept an optional
+`policy` callable — `AgentRecord -> Decision` — instead of forking the
+package. The reference policy above (`default_policy` in `policy.py`)
+is used if you don't pass one:
+
+```python
+from x402_identity_guard import resolve_trust
+from x402_identity_guard.policy import Decision
+from x402_identity_guard.registry_client import AgentRecord
+
+def lenient_policy(record: AgentRecord) -> Decision:
+    """Only DENY on the cryptographic invariant check; FLAG everything else."""
+    if not record.identity.is_consistent:
+        return Decision("DENY", "inconsistent_identity", record.identity.agent_id, record)
+    return Decision("ALLOW", "ok", record.identity.agent_id, record)
+
+decision = await resolve_trust("1:36", policy=lenient_policy)
+```
+
+Same pattern with the middleware:
+
+```python
+app.add_middleware(IdentityGuardMiddleware, policy=lenient_policy)
+```
+
+`default_policy` is still importable and callable directly if you want
+to reuse most of it and only override a piece — it's short on purpose.
+(`_decide` is kept as a backwards-compatible alias for `default_policy`.)
 
 ## Roadmap
 
 - v1 (this repo): fixed reference policy, on-chain reads only, TTL-cached
-- v1.x: pluggable policy (swap `resolve_trust` for your own callable)
+- **v1.x (this repo): pluggable policy — done.** Swap `resolve_trust`'s
+  or `IdentityGuardMiddleware`'s `policy` argument for your own callable.
 - Later, if there's real integrator demand: configurable/weighted
   thresholds, Node.js port
 

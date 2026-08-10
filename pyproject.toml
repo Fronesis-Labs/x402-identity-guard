@@ -1,6 +1,6 @@
 [project]
 name = "x402-identity-guard"
-version = "0.1.0"
+version = "0.2.0"
 description = "Reference identity pre-filter for x402 servers, built on TRC-8004"
 readme = "README.md"
 license = { text = "Apache-2.0" }

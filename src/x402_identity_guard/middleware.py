@@ -10,7 +10,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from .policy import resolve_trust
+from .policy import PolicyFn, resolve_trust
 from .registry_client import RegistryClient
 
 
@@ -21,11 +21,13 @@ class IdentityGuardMiddleware(BaseHTTPMiddleware):
         agent_id_header: str = "X-Agent-Id",
         block_on_flag: bool = False,
         client: RegistryClient | None = None,
+        policy: PolicyFn | None = None,
     ):
         super().__init__(app)
         self._header = agent_id_header
         self._block_on_flag = block_on_flag
         self._client = client
+        self._policy = policy
 
     async def dispatch(self, request: Request, call_next):
         agent_id = request.headers.get(self._header)
@@ -34,7 +36,7 @@ class IdentityGuardMiddleware(BaseHTTPMiddleware):
             # Let the request through; your route can require the header itself.
             return await call_next(request)
 
-        decision = await resolve_trust(agent_id, client=self._client)
+        decision = await resolve_trust(agent_id, client=self._client, policy=self._policy)
 
         if decision.status == "DENY":
             return JSONResponse(

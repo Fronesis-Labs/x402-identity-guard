@@ -7,7 +7,7 @@ and semantic classifications (such as KNOWN_BUT_UNTRUSTED).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Callable, Literal
 
 from .registry_client import (
     AgentClassification,
@@ -31,7 +31,13 @@ class Decision:
     record: AgentRecord | None = None
 
 
-def _decide(record: AgentRecord) -> Decision:
+# A policy is any callable that turns a fetched AgentRecord into a Decision.
+# Swap this for your own risk model via resolve_trust(..., policy=my_policy).
+PolicyFn = Callable[[AgentRecord], Decision]
+
+
+def default_policy(record: AgentRecord) -> Decision:
+    """The reference policy shipped with this package. See README for the full rule order."""
     identity = record.identity
     signals = record.trust_signals
 
@@ -69,16 +75,31 @@ def _decide(record: AgentRecord) -> Decision:
     return Decision("ALLOW", "ok", identity.agent_id, record)
 
 
-async def resolve_trust(agent_id: str, client: RegistryClient | None = None) -> Decision:
+# Backwards-compatible alias. `_decide` was the original (private-by-convention)
+# name; existing tests and any external code importing it directly keep working.
+_decide = default_policy
+
+
+async def resolve_trust(
+    agent_id: str,
+    client: RegistryClient | None = None,
+    policy: PolicyFn | None = None,
+) -> Decision:
     """Look up an agent on TRC-8004 and return ALLOW / FLAG / DENY.
 
     On registry errors (network down, malformed data), fails to FLAG
-    rather than ALLOW or DENY.
+    rather than ALLOW or DENY -- this happens before any policy runs,
+    since there's no AgentRecord to hand to one.
+
+    `policy` swaps out the decision logic while keeping the registry
+    lookup, caching, and error handling above unchanged. Defaults to
+    `default_policy` (this module's reference policy) if omitted.
     """
     client = client or RegistryClient()
+    active_policy = policy or default_policy
     try:
         record = await client.get_agent_record(agent_id)
     except RegistryError as exc:
         return Decision("FLAG", f"registry_unavailable: {exc}", agent_id, None)
 
-    return _decide(record)
+    return active_policy(record)

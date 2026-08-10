@@ -1,10 +1,11 @@
 import pytest
 
-from x402_identity_guard.policy import _decide
+from x402_identity_guard.policy import Decision, _decide, default_policy, resolve_trust
 from x402_identity_guard.registry_client import (
     AgentClassification,
     AgentIdentity,
     AgentRecord,
+    RegistryError,
     TrustSignals,
 )
 
@@ -122,3 +123,63 @@ def test_no_identity_takes_priority_over_everything():
     decision = _decide(record)
     assert decision.status == "DENY"
     assert decision.reason == "no_identity"
+
+
+def test_decide_alias_matches_default_policy():
+    """_decide is a backwards-compatible alias for default_policy, not a fork of it."""
+    assert _decide is default_policy
+
+
+class _StubClient:
+    """Minimal stand-in for RegistryClient — returns a fixed record, hits no network."""
+
+    def __init__(self, record: AgentRecord | None = None, error: Exception | None = None):
+        self._record = record
+        self._error = error
+
+    async def get_agent_record(self, agent_id: str) -> AgentRecord:
+        if self._error is not None:
+            raise self._error
+        return self._record
+
+
+@pytest.mark.asyncio
+async def test_resolve_trust_uses_default_policy_when_none_given():
+    record = _record(classification=AgentClassification.KNOWN_BUT_UNTRUSTED)
+    decision = await resolve_trust("1:36", client=_StubClient(record))
+    assert decision.status == "FLAG"
+    assert decision.reason == "known_but_untrusted"
+
+
+@pytest.mark.asyncio
+async def test_resolve_trust_uses_custom_policy_when_given():
+    """A pluggable policy fully overrides the decision, even for records default_policy would DENY."""
+    record = _record(
+        identity=_identity(is_consistent=False),  # default_policy would DENY this
+        classification=AgentClassification.INCONSISTENT_IDENTITY,
+    )
+
+    def always_allow(_record: AgentRecord) -> Decision:
+        return Decision("ALLOW", "custom_policy_override", _record.identity.agent_id, _record)
+
+    decision = await resolve_trust("1:36", client=_StubClient(record), policy=always_allow)
+    assert decision.status == "ALLOW"
+    assert decision.reason == "custom_policy_override"
+
+
+@pytest.mark.asyncio
+async def test_resolve_trust_registry_error_flags_before_policy_runs():
+    """Registry errors short-circuit to FLAG without ever calling the policy."""
+    policy_was_called = False
+
+    def spy_policy(_record: AgentRecord) -> Decision:
+        nonlocal policy_was_called
+        policy_was_called = True
+        return Decision("ALLOW", "unreachable", "1:36", _record)
+
+    client = _StubClient(error=RegistryError("rpc timeout"))
+    decision = await resolve_trust("1:36", client=client, policy=spy_policy)
+
+    assert decision.status == "FLAG"
+    assert decision.reason.startswith("registry_unavailable")
+    assert policy_was_called is False
