@@ -1,5 +1,6 @@
 # x402-identity-guard
 
+[![CI](https://github.com/Fronesis-Labs/x402-identity-guard/actions/workflows/ci.yml/badge.svg )](https://github.com/Fronesis-Labs/x402-identity-guard/actions/workflows/ci.yml )
 [![TRC-8004](https://img.shields.io/badge/TRON-TRC--8004-1677ff.svg )](https://github.com/BofAI/trc-8004-contracts )
 [![License](https://img.shields.io/github/license/Fronesis-Labs/x402-identity-guard )](LICENSE)
 [![Python](https://img.shields.io/badge/Python-%3E%3D3.10-3776ab.svg )](https://www.python.org/ )
