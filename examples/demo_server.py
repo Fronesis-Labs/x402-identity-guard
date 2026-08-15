@@ -24,10 +24,11 @@ app.add_middleware(
 
 @app.post("/paid-action")
 async def paid_action(request: Request):
-    print()
-    print("🔥 PAID ACTION EXECUTED")
-    print("   The protected operation was actually reached.")
-    print()
+    """The protected operation.
+
+    If this function executes, the agent passed the identity guard.
+    """
+    print(">>> PAID ACTION EXECUTED")
 
     return {
         "status": "executed",
@@ -57,3 +58,4 @@ if __name__ == "__main__":
     print()
 
     uvicorn.run(app, host="127.0.0.1", port=8000)
+

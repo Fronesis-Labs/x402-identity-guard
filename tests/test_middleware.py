@@ -22,7 +22,11 @@ class _StubClient:
         return self._record
 
 
-def _make_app(record: AgentRecord, block_on_flag: bool = False):
+def _make_app(
+    record: AgentRecord,
+    block_on_flag: bool = False,
+    protected_paths: set[str] | None = None,
+):
     async def homepage(request):
         return JSONResponse({"ok": True})
 
@@ -31,6 +35,7 @@ def _make_app(record: AgentRecord, block_on_flag: bool = False):
         IdentityGuardMiddleware,
         client=_StubClient(record),
         block_on_flag=block_on_flag,
+        protected_paths=protected_paths,
     )
     return app
 
@@ -98,6 +103,7 @@ def test_flagged_agent_blocked_when_configured():
     app = _make_app(
         _record(classification=AgentClassification.KNOWN_BUT_UNTRUSTED, reputation_count=0, reputation_average_value=None),
         block_on_flag=True,
+        protected_paths={"/"},
     )
     client = TestClient(app)
     resp = client.get("/", headers={"X-Agent-Id": "1:36"})

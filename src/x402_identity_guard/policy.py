@@ -19,6 +19,17 @@ from .registry_client import (
 Status = Literal["ALLOW", "FLAG", "DENY"]
 
 # Threshold constants for policy decisions
+#
+# KNOWN ASSUMPTION (documented, not yet enforced): MIN_REPUTATION_SCORE assumes
+# feedback in the connected ReputationRegistry is given on a 0-100 scale. The
+# protocol itself does NOT enforce this — feedback is stored as an
+# arbitrary-precision (value, valueDecimals) pair and a client could just as
+# legitimately leave feedback on a 1-5 scale, a -1/0/1 scale, or anything else
+# (see registry_client.py and SECURITY.md for the full detail). If any feedback
+# source you rely on doesn't use a 0-100 scale, this threshold will produce
+# false DENY decisions for agents with genuinely good reputation. Until this is
+# resolved (e.g. once real feedback-source conventions are known from a design
+# partner), treat MIN_REPUTATION_SCORE as valid only for 0-100-scale sources.
 MIN_REPUTATION_SCORE = 50.0  # Average value threshold (0-100 style)
 MAX_NEGATIVE_VALIDATIONS = 0 # Any rejected/negative validation blocks execution
 
@@ -54,7 +65,9 @@ def default_policy(record: AgentRecord) -> Decision:
     if total_val > 0 and pos_val < total_val:
         return Decision("DENY", "failed_validation", identity.agent_id, record)
 
-    # 4. Low average reputation check (0-100 scale)
+    # 4. Low average reputation check
+    # ASSUMES a 0-100 feedback scale — see MIN_REPUTATION_SCORE note above.
+    # Not protocol-enforced; may false-DENY agents with non-0-100-scale feedback.
     if (
         signals.reputation_count > 0
         and signals.reputation_average_value is not None
