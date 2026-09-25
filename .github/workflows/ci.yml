@@ -29,8 +29,30 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
 
+      - name: Check out DCL repositories used by the Shasta demo
+        uses: actions/checkout@v4
+        with:
+          repository: Fronesis-Labs/dcl-webhook
+          path: dcl-webhook
+
+      - name: Check out dcl-core
+        uses: actions/checkout@v4
+        with:
+          repository: Fronesis-Labs/dcl-core
+          path: dcl-core
+
+      - name: Check out dcl-audit-event
+        uses: actions/checkout@v4
+        with:
+          repository: Fronesis-Labs/dcl-audit-event
+          path: dcl-audit-event
+
       - name: Install project and development dependencies
-        run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
+        run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]" && python -m pip install "pyyaml>=6.0.1"
 
       - name: Run tests
+        env:
+          DCL_WEBHOOK_ROOT: ${{ github.workspace }}/dcl-webhook
+          DCL_CORE_ROOT: ${{ github.workspace }}/dcl-core
+          DCL_AUDIT_EVENT_ROOT: ${{ github.workspace }}/dcl-audit-event
         run: python -m pytest -q

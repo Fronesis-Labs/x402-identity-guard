@@ -1,4 +1,4 @@
-"""Smallest TRON-native Shasta demo. Example only, not a production integration.
+"""Smallest TRON-native Shasta demo. Local testnet example, not production.
 
 Flow:
     TRC-8004 identity
@@ -9,10 +9,27 @@ Flow:
     -> create_audit_event() (frozen Audit Event v1.0)
     -> print the canonical event JSON
 
-Does not settle a payment, broadcast a TRON transaction, or change DCL,
+Does not settle a payment, broadcast a TRON transaction, authenticate the
+caller, spend TRON Energy or Bandwidth, use a relayer, or change DCL,
 dcl-langchain, or the audit-event schema.
 
-Usage:
+proof.tx_hash is the local SQLite hash-chain digest, not a TRON transaction.
+
+Checkout layout, or the environment variables of the same names:
+
+    workspace/
+    ├── x402-identity-guard/
+    ├── dcl-webhook/
+    ├── dcl-core/
+    └── dcl-audit-event/
+
+    DCL_WEBHOOK_ROOT
+    DCL_CORE_ROOT
+    DCL_AUDIT_EVENT_ROOT
+
+audit_logic imports yaml, so install PyYAML: pip install "pyyaml>=6.0.1"
+
+Usage, from x402-identity-guard:
     python examples/shasta_dcl_demo.py
     python examples/shasta_dcl_demo.py 1:36
 """
@@ -45,12 +62,15 @@ IDENTITY_SOURCE = "trc8004_registry_read"
 IDENTITY_CONFIDENCE = "unverified"
 
 
+_REPO_ENV = {
+    "dcl-webhook": "DCL_WEBHOOK_ROOT",
+    "dcl-core": "DCL_CORE_ROOT",
+    "dcl-audit-event": "DCL_AUDIT_EVENT_ROOT",
+}
+
+
 def _sibling_repo(name: str) -> Path:
-    env_key = {
-        "dcl-webhook": "DCL_WEBHOOK_ROOT",
-        "dcl-core": "DCL_CORE_ROOT",
-        "dcl-audit-event": "DCL_AUDIT_EVENT_ROOT",
-    }[name]
+    env_key = _REPO_ENV[name]
     override = os.environ.get(env_key)
     if override:
         return Path(override)
@@ -68,18 +88,36 @@ def load_dcl_functions():
     webhook_root = _sibling_repo("dcl-webhook")
     core_root = _sibling_repo("dcl-core")
     audit_root = _sibling_repo("dcl-audit-event")
-    for root, label in (
-        (webhook_root, "dcl-webhook"),
-        (core_root, "dcl-core"),
-        (audit_root, "dcl-audit-event"),
-    ):
-        if not root.is_dir():
-            raise FileNotFoundError(
-                f"{label} not found at {root}. Set the matching *_ROOT environment variable."
-            )
+    located = (
+        ("dcl-webhook", webhook_root),
+        ("dcl-core", core_root),
+        ("dcl-audit-event", audit_root),
+    )
+    missing = [(label, root) for label, root in located if not root.is_dir()]
+    if missing:
+        details = "\n".join(
+            f"  {_REPO_ENV[label]}: {label} not found at {root}" for label, root in missing
+        )
+        raise FileNotFoundError(
+            "Shasta demo could not find every DCL checkout.\n"
+            "Set DCL_WEBHOOK_ROOT, DCL_CORE_ROOT, and DCL_AUDIT_EVENT_ROOT,\n"
+            "or place dcl-webhook, dcl-core, and dcl-audit-event next to x402-identity-guard.\n"
+            f"{details}"
+        )
     _prepend_import_path(core_root)
     _prepend_import_path(audit_root)
     _prepend_import_path(webhook_root)
+
+    try:
+        import yaml  # audit_logic.evaluate_policy imports this lazily
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            'PyYAML is required because dcl-webhook audit_logic imports yaml. '
+            'Install it with: pip install "pyyaml>=6.0.1" '
+            "(also declared in dcl-webhook/requirements.txt)."
+        ) from exc
+    else:
+        del yaml
 
     from audit_logic import BUILTIN_POLICIES, evaluate_policy
     from dcl_audit_event import SCHEMA_VERSION, create_audit_event

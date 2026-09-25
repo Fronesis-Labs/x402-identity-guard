@@ -1,4 +1,4 @@
-"""Offline tests for the Shasta demo. No TRON RPC and no payment."""
+"""Shasta demo tests. Registry lookups are stubbed. The DCL path imports the real checkouts."""
 
 from __future__ import annotations
 
@@ -179,6 +179,73 @@ def test_event_out_writes_the_same_frozen_event(tmp_path):
     path = tmp_path / "shasta_demo_event.json"
     demo.write_event(path, event)
     assert json.loads(path.read_text(encoding="utf-8")) == event
+
+
+def test_missing_checkouts_name_the_environment_variables(monkeypatch, tmp_path):
+    monkeypatch.setenv("DCL_WEBHOOK_ROOT", str(tmp_path / "missing-webhook"))
+    monkeypatch.setenv("DCL_CORE_ROOT", str(tmp_path / "missing-core"))
+    monkeypatch.setenv("DCL_AUDIT_EVENT_ROOT", str(tmp_path / "missing-audit"))
+    with pytest.raises(FileNotFoundError) as exc:
+        demo.load_dcl_functions()
+    message = str(exc.value)
+    assert "DCL_WEBHOOK_ROOT" in message
+    assert "DCL_CORE_ROOT" in message
+    assert "DCL_AUDIT_EVENT_ROOT" in message
+    assert "*_ROOT" not in message
+
+
+def test_missing_pyyaml_names_the_install(monkeypatch):
+    import builtins
+
+    monkeypatch.delitem(sys.modules, "yaml", raising=False)
+    real_import = builtins.__import__
+
+    def _import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "yaml":
+            raise ModuleNotFoundError("No module named 'yaml'")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", _import)
+    with pytest.raises(ModuleNotFoundError) as exc:
+        demo.load_dcl_functions()
+    assert 'pip install "pyyaml>=6.0.1"' in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_real_dcl_path_emits_commit_for_the_demo_action(tmp_path):
+    loaded = demo.load_dcl_functions()
+    assert loaded["evaluate_policy"].__module__ == "audit_logic"
+    assert loaded["create_audit_event"].__module__ == "dcl_audit_event"
+    assert loaded["ChainState"].__module__.startswith("dcl_core")
+
+    decision = _decision("FLAG", "known_but_untrusted")
+
+    async def resolve(agent_id, client=None):
+        return decision
+
+    db_path = tmp_path / "chain.db"
+    event = await demo.run_demo(
+        "1:36",
+        action=demo.DEMO_ACTION,
+        db_path=str(db_path),
+        resolve=resolve,
+        dcl=None,
+    )
+    row = sqlite3.connect(db_path).execute(
+        "SELECT tx_hash, verdict, agent_id FROM chain"
+    ).fetchone()
+    assert event["schema_version"] == loaded["schema_version"] == "1.0"
+    assert event["event_type"] == "dcl.audit.evaluated"
+    assert event["producer"] == "shasta-dcl-demo"
+    assert event["agent_id"] == "1:36"
+    assert event["identity_confidence"] == "unverified"
+    assert event["verdict"] == "COMMIT" == row[1]
+    assert event["proof"]["tx_hash"] == row[0]
+    assert event["proof"]["tx_hash"].startswith("0x")
+    assert row[2] == "1:36"
+    assert event["integration"]["network"] == "shasta"
+    assert event["metadata"]["identity_status"] == "FLAG"
+    assert "payment" not in event
 
 
 def test_identity_confidence_constant_does_not_claim_authentication():

@@ -131,10 +131,132 @@ failures return `503` when `fail_closed_on_registry_error=True`.
 The middleware does not authenticate the caller or bind `X-Agent-Id` to an
 x402 payer by itself. For authorization-sensitive deployments, provide an
 `identity_binding` callback that verifies the caller, payer or delegation.
-See `examples/dcl_integration_example.py` for wiring this in front of
-DCL's `check_policy_before` / `check_policy_after`, and
-`examples/inspect_agent.py` for a full evaluation printout on a real
-agent_id.
+`examples/inspect_agent.py` prints a full identity evaluation for a real
+agent id. The runnable Shasta-to-DCL path is the next section.
+`examples/dcl_integration_example.py` is a middleware sketch: its DCL call
+raises `NotImplementedError` and does not evaluate a policy.
+
+## Shasta → DCL demo
+
+This is a local TRON Shasta testnet demo. It prints one frozen DCL Audit
+Event v1.0 and then discards its temporary database. It does not publish
+that event to the Transparency Board.
+
+The demo reads one TRC-8004 agent from Shasta, runs `resolve_trust()`, and
+stops when the decision is `DENY` or the registry record is missing.
+`ALLOW` or `FLAG` continues through the existing DCL text policy, appends
+one row to a temporary SQLite hash chain, and prints the canonical event.
+
+```
+TRC-8004 lookup
+       ↓
+ALLOW / FLAG / DENY
+       ↓
+DCL policy evaluation
+       ↓
+COMMIT / NO_COMMIT
+       ↓
+local hash-chain append
+       ↓
+Canonical Audit Event v1.0
+```
+
+This demo does not:
+
+- send a TRON transaction
+- perform TRON settlement
+- authenticate caller ownership
+- use TRON Energy or Bandwidth
+- use a relayer
+
+`proof.tx_hash` is the SHA-256 digest of the local SQLite hash-chain row.
+It is a local proof, not a TRON transaction id and not a payment
+transaction. `identity_confidence` is `unverified`: the registry read does
+not prove that the caller owns the agent.
+
+### Checkouts
+
+Default layout. The demo looks next to `x402-identity-guard` for the other
+three directories:
+
+```
+workspace/
+├── x402-identity-guard/
+├── dcl-webhook/
+├── dcl-core/
+└── dcl-audit-event/
+```
+
+Public repositories:
+
+- https://github.com/Fronesis-Labs/x402-identity-guard
+- https://github.com/Fronesis-Labs/dcl-webhook
+- https://github.com/Fronesis-Labs/dcl-core
+- https://github.com/Fronesis-Labs/dcl-audit-event
+
+Other locations work when these variables point at the checkout roots.
+
+PowerShell:
+
+```powershell
+$env:DCL_WEBHOOK_ROOT="C:\workspace\dcl-webhook"
+$env:DCL_CORE_ROOT="C:\workspace\dcl-core"
+$env:DCL_AUDIT_EVENT_ROOT="C:\workspace\dcl-audit-event"
+```
+
+bash:
+
+```bash
+export DCL_WEBHOOK_ROOT="$HOME/workspace/dcl-webhook"
+export DCL_CORE_ROOT="$HOME/workspace/dcl-core"
+export DCL_AUDIT_EVENT_ROOT="$HOME/workspace/dcl-audit-event"
+```
+
+`TRON_SHASTA_RPC` overrides the default Shasta endpoint
+`https://api.shasta.trongrid.io`.
+
+### Dependencies
+
+Use Python 3.10, 3.11, or 3.12. From `x402-identity-guard`:
+
+```bash
+pip install -e .
+pip install "git+https://github.com/BofAI/8004-sdk.git#subdirectory=python"
+pip install "pyyaml>=6.0.1"
+```
+
+`pyyaml` is required because `dcl-webhook/audit_logic.py` imports `yaml`
+inside `evaluate_policy`. That pin is already declared in
+`dcl-webhook/requirements.txt`. This demo does not install that full file:
+the rest of it is the webhook server stack. `dcl-core` and
+`dcl-audit-event` are imported from the checkouts above and have no
+third-party dependencies.
+
+### Run
+
+From `x402-identity-guard`:
+
+```bash
+python examples/shasta_dcl_demo.py 1:36
+```
+
+Stdout is the canonical event JSON. The same JSON can be written to a file:
+
+```bash
+python examples/shasta_dcl_demo.py 1:36 --event-out shasta_demo_event.json
+```
+
+Agent `1:36` is a known Shasta test agent. With the built-in action text, a
+successful run prints `identity_status` `FLAG`, `identity_reason`
+`known_but_untrusted`, `verdict` `COMMIT`, `producer` `shasta-dcl-demo`,
+`integration.network` `shasta`, and `schema_version` `1.0`. A `DENY` or a
+missing registry record prints a short `stopped` object and does not emit
+an audit event.
+
+One earlier run is on the public board at
+https://transparency.fronesislabs.com/ under Canonical Audit Events
+(`producer` `shasta-dcl-demo`, agent `1:36`). A new local run creates a new
+event and leaves the board unchanged.
 
 ## Policy
 
