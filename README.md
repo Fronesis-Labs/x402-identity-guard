@@ -246,12 +246,20 @@ Stdout is the canonical event JSON. The same JSON can be written to a file:
 python examples/shasta_dcl_demo.py 1:36 --event-out shasta_demo_event.json
 ```
 
-Agent `1:36` is a known Shasta test agent. With the built-in action text, a
+Agent `1:36` is a known Shasta test agent. The demo client uses chain id
+`1`, the legacy TRON identifier. With the built-in action text, a
 successful run prints `identity_status` `FLAG`, `identity_reason`
 `known_but_untrusted`, `verdict` `COMMIT`, `producer` `shasta-dcl-demo`,
 `integration.network` `shasta`, and `schema_version` `1.0`. A `DENY` or a
 missing registry record prints a short `stopped` object and does not emit
 an audit event.
+
+The [8004 SDK](https://github.com/BofAI/8004-sdk/pull/2) now assigns Shasta
+the canonical chain id `2494104990`. An agent id of the form
+`2494104990:<tokenId>` does not pass this demo yet: `RegistryClient`
+rejects a prefix that differs from its `default_chain_id` with
+`wrong_chain_id`. Passing chain id `1` explicitly remains valid for
+`1:36`.
 
 One earlier run is on the public board at
 https://transparency.fronesislabs.com/ under Canonical Audit Events
